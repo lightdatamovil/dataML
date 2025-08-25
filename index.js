@@ -24,7 +24,7 @@ ch.prefetch(PREFETCH);
 // 🔹 enviar un mensaje de prueba
 const testPayload = {
     idEmpresa: 275,
-    did: 10001,
+    did: 272,
     sellerId: "1964159102",
     shipmentId: "45399487764",
 };
