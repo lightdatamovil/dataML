@@ -1,5 +1,6 @@
 import mysql from 'mysql';
 import redis from 'redis';
+import { logRed, logYellow } from './functions/logsCustom.js';
 
 
 export const redisClient = redis.createClient({
@@ -111,7 +112,7 @@ export async function updateEstadoRedis(empresaId, envioId, estado) {
 
     await redisClient.set('DWRTE', JSON.stringify(DWRTE));
 }
-export async function executeQuery(connection, query, values, log = false) {
+export async function executeQuery(connection, query, values, log = true) {
     if (log) {
         logYellow(`Ejecutando query: ${query} con valores: ${values}`);
     }

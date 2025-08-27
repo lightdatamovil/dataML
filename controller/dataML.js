@@ -1,5 +1,6 @@
 // processDataML.js – versión completa
 // Importa helpers compartidos
+import { log } from 'node:console';
 import { executeQuery, getConnection, redisClient } from '../db.js';
 
 /**
@@ -21,105 +22,158 @@ function normalizeStr(str = "") {
     return out;
 }
 
-/**
- * Construye el payload data (el contrato que espera Fguardar en PHP) a partir de shipment y order
- */
+function isNonEmptyStr(v) {
+    return typeof v === "string" && v.trim() !== "";
+}
+function pickStr(...vals) {
+    for (const v of vals) if (isNonEmptyStr(v)) return v;
+    return "";
+}
+function pickId(...vals) {
+    for (const v of vals) {
+        if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+    }
+    return "";
+}
+function pickNum(...vals) {
+    for (const v of vals) {
+        if (v === undefined || v === null) continue;
+        const n = Number(v);
+        if (!Number.isNaN(n)) return n;
+    }
+    return null;
+}
+
 function buildDataFromML(shipment, order) {
     const ra = shipment?.receiver_address || {};
-    const city = ra.city || {};
-    const state = ra.state || {};
-    const country = ra.country || {};
-    const neighborhood = ra.neighborhood || {};
-    const municipality = ra.municipality || {};
+    const so = shipment?.shipping_option || {};
     const buyer = order?.buyer || {};
 
-    const receiverName =
-        ra.receiver_name ||
-        shipment?.receiver?.name ||
-        `${buyer.first_name || ""} ${buyer.last_name || ""}`.trim();
+    // Address (preferimos anidado; ignoramos strings vacíos de los aplanados)
+    const street_name = pickStr(shipment?.receiver_address_street_name, ra.street_name);
+    const street_number = pickStr(shipment?.receiver_address_street_number, ra.street_number);
+    const address_line = pickStr(shipment?.receiver_address_address_line, ra.address_line);
+    const phone = pickStr(shipment?.receiver_address_receiver_phone, ra.receiver_phone, ra.phone);
+    const city_id = pickId(shipment?.receiver_address_city_id, ra.city_id, ra.city?.id);
+    const city_name = pickStr(shipment?.receiver_address_city_name, ra.city_name, ra.city?.name);
+    const state_id = pickId(shipment?.receiver_address_state_id, ra.state_id, ra.state?.id);
+    const state_name = pickStr(shipment?.receiver_address_state_name, ra.state_name, ra.state?.name);
+    const country_id = pickId(shipment?.receiver_address_country_id, ra.country_id, ra.country?.id);
+    const country_name = pickStr(shipment?.receiver_address_country_name, ra.country_name, ra.country?.name);
+    const zip_code = pickId(shipment?.receiver_address_zip_code, ra.zip_code, ra.zipcode);
+    const comment = pickStr(shipment?.receiver_address_comment, ra.comment);
+    const lat = pickNum(shipment?.receiver_address_latitude, ra.latitude);
+    const lon = pickNum(shipment?.receiver_address_longitude, ra.longitude);
+    const delivery_pref = pickStr(shipment?.delivery_preference, ra.delivery_preference);
 
-    // items (si es que vienen en shipment)
-    const items =
-        Array.isArray(shipment?.items)
-            ? shipment.items.map((it) => ({
-                id: it?.id ?? it?.item?.id ?? "",
-                description: it?.description ?? it?.title ?? "",
-                dimensions: it?.dimensions ?? "",
-                quantity: it?.quantity ?? 0,
-            }))
-            : [];
+    // Nombre del receptor (preferimos el de la address; si no, buyer)
+    const receiverName = pickStr(
+        shipment?.receiver_address_receiver_name,
+        ra.receiver_name,
+        `${buyer.first_name || ""} ${buyer.last_name || ""}`.trim()
+    );
+
+    // Peso (0 por defecto)
+    const peso =
+        shipment?.peso != null ? Number(shipment.peso)
+            : shipment?.weight != null ? Number(shipment.weight)
+                : 0;
+
+    // Extended: serializamos si es objeto
+    const extRaw =
+        shipment?.shipping_option_estimated_delivery_extended ??
+        shipment?.estimated_delivery_extended ??
+        so?.estimated_delivery_extended ??
+        null;
+    const estimated_extended =
+        extRaw && typeof extRaw === "object" ? JSON.stringify(extRaw) : (extRaw || "");
 
     return {
         // Identificadores
         order_id: shipment?.order_id || order?.id || order?.order_id || "",
-        receiver_id: ra?.receiver_id || shipment?.receiver_id || "",
-        receiver_address_id: ra?.id || "",
+        receiver_id: shipment?.receiver_id || "",
+        receiver_address_id: pickId(shipment?.receiver_address_id, ra.id),
 
-        // Receiver / Address (aplanado)
+        // Receiver / Address
         receiver_address_receiver_name: receiverName,
-        receiver_address_receiver_phone: ra?.receiver_phone || shipment?.receiver?.phone || "",
-        receiver_address_address_line: ra?.address_line || "",
-        receiver_address_street_name: ra?.street_name || "",
-        receiver_address_street_number: ra?.street_number || "",
-        receiver_address_zip_code: ra?.zip_code || ra?.zipcode || "",
-        receiver_address_city_id: city?.id || "",
-        receiver_address_city_name: city?.name || ra?.city_name || "",
-        receiver_address_state_id: state?.id || "",
-        receiver_address_state_name: state?.name || ra?.state_name || "",
-        receiver_address_country_id: country?.id || "",
-        receiver_address_country_name: country?.name || "",
-        receiver_address_neighborhood_id: neighborhood?.id || "",
-        receiver_address_neighborhood_name: neighborhood?.name || "",
-        receiver_address_municipality_id: municipality?.id || "",
-        receiver_address_municipality_name: municipality?.name || "",
-        receiver_address_latitude: typeof ra?.latitude === "number" ? ra.latitude : null,
-        receiver_address_longitude: typeof ra?.longitude === "number" ? ra.longitude : null,
-        receiver_address_comment: ra?.comment || shipment?.comment || "",
-        delivery_preference: shipment?.delivery_preference || ra?.delivery_preference || "",
+        receiver_address_receiver_phone: phone,
+        receiver_address_address_line: address_line,
+        receiver_address_street_name: street_name,
+        receiver_address_street_number: street_number,
+        receiver_address_zip_code: zip_code,
+        receiver_address_city_id: city_id,
+        receiver_address_city_name: city_name,
+        receiver_address_state_id: state_id,
+        receiver_address_state_name: state_name,
+        receiver_address_country_id: country_id,
+        receiver_address_country_name: country_name,
+        receiver_address_neighborhood_id: pickId(
+            shipment?.receiver_address_neighborhood_id, ra.neighborhood?.id
+        ),
+        receiver_address_neighborhood_name: pickStr(
+            shipment?.receiver_address_neighborhood_name, ra.neighborhood?.name
+        ),
+        receiver_address_municipality_id: pickId(
+            shipment?.receiver_address_municipality_id, ra.municipality?.id
+        ),
+        receiver_address_municipality_name: pickStr(
+            shipment?.receiver_address_municipality_name, ra.municipality?.name
+        ),
+        receiver_address_latitude: lat,
+        receiver_address_longitude: lon,
+        receiver_address_comment: comment,
+        delivery_preference: delivery_pref,
 
-        // Envío / costos / tiempos
-        peso: shipment?.weight ?? shipment?.dimensions?.weight ?? null,
+        // Envío / Costos / tiempos
+        peso,                                  // ✅ nunca null
         base_cost: shipment?.base_cost ?? null,
-        // order_cost: tomamos de order si viene, si no del shipping del order, si no base_cost
-        order_cost: order?.order_cost ?? order?.shipping?.cost?.charge ?? order?.total_amount ?? order?.base_cost ?? null,
-        tracking_method: shipment?.tracking_method || shipment?.tracking?.method || "",
-        tracking_number: shipment?.tracking_number || shipment?.tracking?.number || "",
-        date_created: shipment?.date_created || shipment?.creation_date || order?.date_created || null,
+        order_cost: order?.order_cost ?? order?.base_cost ?? null,
+        tracking_method: pickStr(shipment?.tracking_method, ""), // null -> ""
+        tracking_number: pickStr(shipment?.tracking_number, ""),
+        date_created: shipment?.date_created || order?.date_created || null,
 
-        // Shipping option
-        shipping_option_id: shipment?.shipping_option?.id || "",
-        shipping_option_shipping_method_id: shipment?.shipping_option?.shipping_method_id || shipment?.shipping_method?.id || "",
-        shipping_option_name: shipment?.shipping_option?.name || shipment?.shipping_method?.name || "",
-        shipping_option_currency_id: shipment?.shipping_option?.currency_id || "",
-        shipping_option_cost: shipment?.shipping_option?.cost ?? null,
-        shipping_option_list_cost: shipment?.shipping_option?.list_cost ?? null,
-        shipping_option_estimated_delivery_time: shipment?.shipping_option?.estimated_delivery_time?.date || null,
-        shipping_option_estimated_delivery_limit: shipment?.shipping_option?.estimated_delivery_time?.limit || null,
-        shipping_option_estimated_delivery_final: shipment?.shipping_option?.estimated_delivery_time?.final || null,
-        shipping_option_estimated_delivery_extended: shipment?.shipping_option?.estimated_delivery_time?.offset || "",
+        // Shipping option (preferimos anidado so.*)
+        shipping_option_id: pickId(shipment?.shipping_option_id, so.id),
+        shipping_option_shipping_method_id: pickId(shipment?.shipping_option_shipping_method_id, so.shipping_method_id),
+        shipping_option_name: pickStr(shipment?.shipping_option_name, so.name),
+        shipping_option_currency_id: pickStr(shipment?.shipping_option_currency_id, so.currency_id),
+        shipping_option_cost: pickNum(shipment?.shipping_option_cost, so.cost),
+        shipping_option_list_cost: pickNum(shipment?.shipping_option_list_cost, so.list_cost),
+        shipping_option_estimated_delivery_time:
+            shipment?.shipping_option_estimated_delivery_time ||
+            so?.estimated_delivery_time?.date || null,
+        shipping_option_estimated_delivery_limit:
+            shipment?.shipping_option_estimated_delivery_limit ||
+            so?.estimated_delivery_limit?.date || null,
+        shipping_option_estimated_delivery_final:
+            shipment?.shipping_option_estimated_delivery_final ||
+            so?.estimated_delivery_final?.date || null,
+        shipping_option_estimated_delivery_extended: estimated_extended, // ✅ string/JSON
 
         // Extras
         obs: shipment?.obs || "",
         turbo: shipment?.turbo ?? 0,
         ml_pack_id: order?.pack_id ?? "",
 
-        // Para items / order_items (fullfilment)
-        items,
-        order_items: Array.isArray(order?.order_items) ? order.order_items : [],
+        // Items
+        items: shipment?.items || shipment?.shipping_items || [],
+        order_items: order?.order_items || [],
     };
 }
+
 
 /** Inserta dirección destino */
 async function insertDireccionDestino(connection, didEnvio, data) {
     const q = `INSERT INTO envios_direcciones_destino 
-    (didEnvio, calle, numero, cp, localidad, provincia, pais, latitud, longitud, obs, delivery_preference)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`;
+    (didEnvio, calle, numero,address_line, cp, localidad, provincia, pais, latitud, longitud, observacion, delivery_preference,destination_comments)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`;
 
     const values = [
         didEnvio,
         data.receiver_address_street_name || "",
         data.receiver_address_street_number || "",
         data.receiver_address_zip_code || "",
+        data.receiver_address_street_name + " " + data.receiver_address_street_number || "",
         data.receiver_address_city_name || "",
         data.receiver_address_state_name || "",
         data.receiver_address_country_name || "",
@@ -127,10 +181,18 @@ async function insertDireccionDestino(connection, didEnvio, data) {
         data.receiver_address_longitude ?? null,
         data.receiver_address_comment || "",
         data.delivery_preference || "",
+        data.receiver_address_comment || "",
     ];
 
-    await executeQuery(connection, q, values);
+
+    const result = await executeQuery(connection, q, values);
+
+    const updateDid = `UPDATE envios_direcciones_destino SET did = ? WHERE id = ?`;
+    await executeQuery(connection, updateDid, [result.insertId, result.insertId]);
+
 }
+
+
 
 /** Inserta items (solo si fullfilment aplica) */
 async function insertItemsIfNeeded(connection, didEnvio, items = [], order_items = []) {
@@ -161,125 +223,164 @@ async function insertItemsIfNeeded(connection, didEnvio, items = [], order_items
 }
 
 /** UPDATE principal de envios (equivalente a Fguardar) */
+// reemplazo seguro de updateEnvioFromData(connection, didEnvio, data)
+/** Lista las columnas reales de la tabla envios (cacheable si querés) */
+async function getEnviosColumns(connection) {
+    const rows = await executeQuery(
+        connection,
+        `SELECT COLUMN_NAME 
+       FROM INFORMATION_SCHEMA.COLUMNS 
+      WHERE TABLE_SCHEMA = DATABASE() 
+        AND TABLE_NAME = 'envios'`,
+        [], false
+    );
+    return rows.map(r => r.COLUMN_NAME);
+}
+
+function toSqlValue(v) {
+    if (v === undefined) return null;
+    if (v instanceof Date) return v;
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer?.(v)) return v;
+    if (typeof v === 'object' && v !== null) {
+        try { return JSON.stringify(v); } catch { return String(v); }
+    }
+    return v;
+}
+
 async function updateEnvioFromData(connection, didEnvio, data) {
-    const tipoEdi = data.delivery_preference === "residential" ? " (R)" : data.delivery_preference ? " (C)" : "";
+    const existingCols = new Set(await getEnviosColumns(connection));
 
-    const destination_receiver_name = normalizeStr(data.receiver_address_receiver_name || "");
-    const destination_city_name = normalizeStr(data.receiver_address_city_name || "");
+    const normalize = (s = "") => {
+        const n = String(s);
+        let out = n.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        out = out.replace(/Ŕ/g, "R").replace(/ĺ/g, "l").replace(/ė/g, "e").replace(/ł/g, "l");
+        return out;
+    };
 
-    // Validaciones duras
+    const tipoEdi =
+        data.delivery_preference === "residential"
+            ? " (R)"
+            : data.delivery_preference
+                ? " (C)"
+                : "";
+
+    const destination_receiver_name = normalize(data.receiver_address_receiver_name || "");
+    const destination_city_name = normalize(data.receiver_address_city_name || "");
+
+    // Validación dura
     if (!data.order_id || !destination_city_name || !(data.receiver_address_zip_code || "").toString().trim()) {
         throw new Error("Validación: faltan order_id, ciudad o CP");
     }
 
-    const fecha_carga = new Date();
-    const estado = 0; // igual que en PHP (luego se marca 1 si todo salió ok)
+    // 👇 Forzar peso a número (default 0)
+    const pesoNum = Number.isFinite(Number(data.peso)) ? Number(data.peso) : 0;
 
-    const q = `UPDATE envios SET 
-    ml_venta_id=?,
-    obs=?,
-    peso=?,
-    tracking_method=?,
-    tracking_number=?,
-    fecha_venta=?,
-    destination_type=?,
-    destination_receiver_id=?,
-    destination_receiver_name=?,
-    destination_receiver_phone=?,
-    destination_comments=?,
-    destination_shipping_address_id=?,
-    destination_shipping_address_line=?,
-    destination_shipping_street_name=?,
-    destination_shipping_street_number=?,
-    destination_shipping_comment=?,
-    destination_shipping_zip_code=?,
-    destination_city_id=?,
-    destination_city_name=?,
-    destination_state_id=?,
-    destination_state_name=?,
-    destination_country_id=?,
-    destination_country_name=?,
-    destination_neighborhood_id=?,
-    destination_neighborhood_name=?,
-    destination_municipality_id=?,
-    destination_municipality_name=?,
-    destination_types=?,
-    destination_latitude=?,
-    destination_longitude=?,
-    lead_time_option_id=?,
-    lead_time_shipping_method_id=?,
-    lead_time_shipping_method_name=?,
-    lead_time_shipping_method_type=?,
-    lead_time_shipping_method_deliver_to=?,
-    lead_time_currency_id=?,
-    lead_time_cost=?,
-    lead_time_list_cost=?,
-    estimated_delivery_time_date=?,
-    estimated_delivery_time_date_72=?,
-    estimated_delivery_time_date_480=?,
-    estimated_delivery_extended=?,
-    estado=?,
-    fecha_carga=?,
-    base_cost=?,
-    delivery_preference=?,
-    valor_declarado=?,
-    turbo=?
-    WHERE superado=0 AND elim=0 AND id=?`;
+    // 👇 Serializar extended si viene objeto (evita "shipping in field list")
+    const extRaw =
+        data.shipping_option_estimated_delivery_extended ??
+        data.estimated_delivery_extended ??
+        "";
+    const estimated_extended =
+        extRaw && typeof extRaw === "object" ? JSON.stringify(extRaw) : extRaw;
 
-    const values = [
-        data.order_id,
-        data.obs || "",
-        data.peso ?? null,
-        data.tracking_method || "",
-        data.tracking_number || "",
-        data.date_created ? new Date(data.date_created) : null,
-        "", // destination_type (en PHP se deja "")
-        data.receiver_id || "",
+    // Mapa candidato -> valores
+    const candidate = {
+        ml_venta_id: data.order_id,
+        obs: data.obs || "",
+        peso: pesoNum, // ✅ nunca null
+        tracking_method: data.tracking_method || "",
+        tracking_number: data.tracking_number || "",
+        fecha_venta: data.date_created ? new Date(data.date_created) : null,
+
+        destination_type: "",
+        destination_receiver_id: data.receiver_id || "",
         destination_receiver_name,
-        data.receiver_address_receiver_phone || "",
-        data.receiver_address_comment || "",
-        data.receiver_address_id || "",
-        (data.receiver_address_address_line || "") + tipoEdi,
-        data.receiver_address_street_name || "",
-        data.receiver_address_street_number || "",
-        "", // destination_shipping_comment
-        data.receiver_address_zip_code || "",
-        data.receiver_address_city_id || "",
-        destination_city_name,
-        data.receiver_address_state_id || "",
-        data.receiver_address_state_name || "",
-        data.receiver_address_country_id || "",
-        data.receiver_address_country_name || "",
-        data.receiver_address_neighborhood_id || "",
-        data.receiver_address_neighborhood_name || "",
-        data.receiver_address_municipality_id || "",
-        data.receiver_address_municipality_name || "",
-        "", // destination_types
-        data.receiver_address_latitude ?? null,
-        data.receiver_address_longitude ?? null,
-        data.shipping_option_id || "",
-        data.shipping_option_shipping_method_id || "",
-        data.shipping_option_name || "",
-        "", // lead_time_shipping_method_type
-        "", // lead_time_shipping_method_deliver_to
-        data.shipping_option_currency_id || "",
-        data.shipping_option_cost ?? null,
-        data.shipping_option_list_cost ?? null,
-        data.shipping_option_estimated_delivery_time ? new Date(data.shipping_option_estimated_delivery_time) : null,
-        data.shipping_option_estimated_delivery_limit ? new Date(data.shipping_option_estimated_delivery_limit) : null,
-        data.shipping_option_estimated_delivery_final ? new Date(data.shipping_option_estimated_delivery_final) : null,
-        data.shipping_option_estimated_delivery_extended || "",
-        estado,
-        fecha_carga,
-        data.base_cost ?? null,
-        data.delivery_preference || "",
-        data.order_cost ?? null,
-        data.turbo ?? 0,
-        didEnvio,
-    ];
+        destination_receiver_phone: data.receiver_address_receiver_phone || "",
+        destination_comments: data.receiver_address_comment || "",
+        destination_shipping_address_id: data.receiver_address_id || "",
+        destination_shipping_address_line: (data.receiver_address_address_line || "") + tipoEdi,
+        destination_shipping_street_name: data.receiver_address_street_name || "",
+        destination_shipping_street_number: data.receiver_address_street_number || "",
+        destination_shipping_comment: "",
 
-    await executeQuery(connection, q, values);
+        destination_shipping_zip_code: data.receiver_address_zip_code || "",
+        destination_city_id: data.receiver_address_city_id || "",
+        destination_city_name,
+        destination_state_id: data.receiver_address_state_id || "",
+        destination_state_name: data.receiver_address_state_name || "",
+        destination_country_id: data.receiver_address_country_id || "",
+        destination_country_name: data.receiver_address_country_name || "",
+        destination_neighborhood_id: data.receiver_address_neighborhood_id || "",
+        destination_neighborhood_name: data.receiver_address_neighborhood_name || "",
+        destination_municipality_id: data.receiver_address_municipality_id || "",
+        destination_municipality_name: data.receiver_address_municipality_name || "",
+        destination_types: "",
+
+        destination_latitude: data.receiver_address_latitude ?? null,
+        destination_longitude: data.receiver_address_longitude ?? null,
+
+        // Si tu esquema no las tiene, se ignoran más abajo
+        lead_time_option_id: data.shipping_option_id || "",
+        lead_time_shipping_method_id: data.shipping_option_shipping_method_id || "",
+        lead_time_shipping_method_name: data.shipping_option_name || "",
+        lead_time_shipping_method_type: "",
+        lead_time_shipping_method_deliver_to: "",
+        lead_time_currency_id: data.shipping_option_currency_id || "",
+        lead_time_cost: data.shipping_option_cost ?? null,
+        lead_time_list_cost: data.shipping_option_list_cost ?? null,
+
+        estimated_delivery_time_date: data.shipping_option_estimated_delivery_time
+            ? new Date(data.shipping_option_estimated_delivery_time)
+            : null,
+        estimated_delivery_time_date_72: data.shipping_option_estimated_delivery_limit
+            ? new Date(data.shipping_option_estimated_delivery_limit)
+            : null,
+        estimated_delivery_time_date_480: data.shipping_option_estimated_delivery_final
+            ? new Date(data.shipping_option_estimated_delivery_final)
+            : null,
+        estimated_delivery_extended: estimated_extended, // ✅ string/JSON
+
+        estado: 0,
+        fecha_carga: new Date(),
+        base_cost: data.base_cost ?? null,
+        delivery_preference: data.delivery_preference || "",
+        valor_declarado: data.order_cost ?? null,
+        turbo: data.turbo ?? 0,
+    };
+    console.log("[envios] candidate:", candidate);
+
+
+    // FILTRO por columnas existentes + serialización de objetos
+    const setClauses = [];
+    const values = [];
+    const skipped = [];
+
+    for (const [col, val] of Object.entries(candidate)) {
+        if (existingCols.has(col)) {
+            setClauses.push("`" + col + "` = ?");
+            values.push(toSqlValue(val)); // 👈 acá convertimos objetos a JSON string
+        } else {
+            skipped.push(col);
+        }
+    }
+
+    if (setClauses.length === 0) {
+        throw new Error("No hay columnas válidas para actualizar en envios (revisá el esquema)");
+    }
+
+    const sql = `UPDATE envios SET ${setClauses.join(", ")} WHERE superado=0 AND elim=0 AND id = ?`;
+    values.push(didEnvio);
+
+    // Logs de diagnóstico (podés apagarlos cuando quede estable)
+    console.log("[envios] columnas existentes:", existingCols);
+    console.log("[envios] columnas actualizadas:", setClauses.map(s => s.replace(" = ?", "")));
+    console.log("[envios] columnas ignoradas:", skipped);
+    console.log("[envios] SQL:", sql);
+    console.log("[envios] values.length:", values.length);
+
+    await executeQuery(connection, sql, values, /*log=*/false);
 }
+
 
 /** Marca el envío como estado=1 (procesado) */
 async function markEnvioProcessed(connection, didEnvio) {

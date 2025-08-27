@@ -22,17 +22,17 @@ await ch.assertQueue(QUEUE, { durable: true });
 ch.prefetch(PREFETCH);
 
 // 🔹 enviar un mensaje de prueba
-const testPayload = {
-    idEmpresa: 275,
-    did: 272,
-    sellerId: "1964159102",
-    shipmentId: "45399487764",
+const data = {
+    idEmpresa: 275,        // empresa que exista en tu Redis empresasData
+    did: 272,              // id del envío en tu tabla envios
+    sellerId: '1964159102',
+    shipmentId: '45399487764',
 };
-ch.sendToQueue(QUEUE, Buffer.from(JSON.stringify(testPayload)), {
+ch.sendToQueue(QUEUE, Buffer.from(JSON.stringify(data)), {
     persistent: true,
     contentType: "application/json",
 });
-console.log("📤 Mensaje de prueba enviado:", testPayload);
+console.log("📤 Mensaje de prueba enviado:", data);
 
 // 🔹 consumir mensajes de la cola
 console.log(`[AMQP] Escuchando cola "${QUEUE}"...`);
