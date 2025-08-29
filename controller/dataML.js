@@ -391,7 +391,7 @@ async function markEnvioProcessed(connection, didEnvio) {
 async function getEnvioRow(connection, didEnvio) {
     const rows = await executeQuery(
         connection,
-        `SELECT id, ml_shipment_id, ml_vendedor_id, didCliente FROM envios WHERE id=? AND superado=0 AND elim=0 LIMIT 1`,
+        `SELECT id, ml_shipment_id, ml_vendedor_id, didCliente FROM envios WHERE id=? AND superado=0 and estado = 0 AND elim=0 LIMIT 1`,
         [didEnvio]
     );
     return rows?.[0] || null;
