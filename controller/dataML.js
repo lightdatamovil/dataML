@@ -44,6 +44,34 @@ function pickNum(...vals) {
     return null;
 }
 
+// Helpers para peso desde dimensions: "W x H x L , WEIGHT"
+function parseWeightFromDimensions(dimStr) {
+    if (!dimStr || typeof dimStr !== "string") return 0;
+    const parts = dimStr.split(",");
+    if (parts.length < 2) return 0;
+    // Tomamos la última parte por si hay más de una coma
+    const raw = parts[parts.length - 1].trim();
+    // Nos quedamos con dígitos y punto decimal
+    const num = Number(raw.replace(/[^\d.]/g, ""));
+    return Number.isFinite(num) ? num : 0; // en gramos
+}
+
+function getItemsArray(shipment) {
+    return Array.isArray(shipment?.shipping_items) && shipment.shipping_items.length
+        ? shipment.shipping_items
+        : (Array.isArray(shipment?.items) ? shipment.items : []);
+}
+
+function getShipmentWeight(shipment) {
+    const items = getItemsArray(shipment);
+    if (!items.length) return 0;
+    return items.reduce((acc, it) => {
+        const qty = Number(it?.quantity) || 1;
+        const itemWeight = parseWeightFromDimensions(it?.dimensions);
+        return acc + (itemWeight * qty); // gramos
+    }, 0);
+}
+
 function buildDataFromML(shipment, order) {
     const ra = shipment?.receiver_address || {};
     const so = shipment?.shipping_option || {};
@@ -73,11 +101,11 @@ function buildDataFromML(shipment, order) {
         `${buyer.first_name || ""} ${buyer.last_name || ""}`.trim()
     );
 
-    // Peso (0 por defecto)
+    // Peso (en gramos): primero campos explícitos, si no, calcular desde items.dimensions
     const peso =
         shipment?.peso != null ? Number(shipment.peso)
             : shipment?.weight != null ? Number(shipment.weight)
-                : 0;
+                : getShipmentWeight(shipment); // fallback real desde items
 
     // Extended: serializamos si es objeto
     const extRaw =
@@ -125,9 +153,15 @@ function buildDataFromML(shipment, order) {
         delivery_preference: delivery_pref,
 
         // Envío / Costos / tiempos
-        peso,                                  // ✅ nunca null
+        peso, // ✅ nunca null; gramos
         base_cost: shipment?.base_cost ?? null,
-        order_cost: order?.order_cost ?? order?.base_cost ?? null,
+
+        // ✅ Valor declarado: priorizamos shipment.order_cost
+        order_cost: shipment?.order_cost
+            ?? order?.order_cost
+            ?? order?.base_cost
+            ?? null,
+
         tracking_method: pickStr(shipment?.tracking_method, ""), // null -> ""
         tracking_number: pickStr(shipment?.tracking_number, ""),
         date_created: shipment?.date_created || order?.date_created || null,
