@@ -30,6 +30,9 @@ ch.consume(
         let data;
         try {
             data = JSON.parse(msg.content.toString());
+
+            console.log(data, "dsadasdasda");
+
         } catch (e) {
             console.error("❌ JSON inválido:", e);
             ch.ack(msg);
