@@ -93,6 +93,7 @@ function buildDataFromML(shipment, order) {
     const lat = pickNum(shipment?.receiver_address_latitude, ra.latitude);
     const lon = pickNum(shipment?.receiver_address_longitude, ra.longitude);
     const delivery_pref = pickStr(shipment?.delivery_preference, ra.delivery_preference);
+    const turbo = shipment?.turbo || ra.turbo || false;
 
     // Nombre del receptor (preferimos el de la address; si no, buyer)
     const receiverName = pickStr(
@@ -100,7 +101,7 @@ function buildDataFromML(shipment, order) {
         ra.receiver_name,
         `${buyer.first_name || ""} ${buyer.last_name || ""}`.trim()
     );
-
+    const Atags = shipment?.tags || [];
     // Peso (en gramos): primero campos explícitos, si no, calcular desde items.dimensions
     const peso =
         shipment?.peso != null ? Number(shipment.peso)
@@ -151,6 +152,7 @@ function buildDataFromML(shipment, order) {
         receiver_address_longitude: lon,
         receiver_address_comment: comment,
         delivery_preference: delivery_pref,
+        turbo: Atags.includes("turbo") ? 1 : 0,
 
         // Envío / Costos / tiempos
         peso, // ✅ nunca null; gramos
@@ -184,9 +186,14 @@ function buildDataFromML(shipment, order) {
             so?.estimated_delivery_final?.date || null,
         shipping_option_estimated_delivery_extended: estimated_extended, // ✅ string/JSON
 
+
+
+
+
         // Extras
         obs: shipment?.obs || "",
-        turbo: shipment?.turbo ?? 0,
+
+        turbo: shipment?.tags ?? 0,
         ml_pack_id: order?.pack_id ?? "",
 
         // Items
